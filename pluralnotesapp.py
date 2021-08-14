@@ -4,10 +4,8 @@ import sys
 import colorama
 import shutil
 import re
+from datetime import date
 from time import sleep
-# Local imports
-import core
-import login
 
 colorama.init()
 
@@ -18,33 +16,373 @@ colorama.init()
 notesDir = os.environ['HOME'] + '/.pluralnotes' # Used to define the main notes directory and/or work with it.
 sharedDir = notesDir + '/sharednotes' # Location of shared directory
 archiveDir = notesDir + '/archivednotes' # Location of archive directory (deleted users' notes)
+sharedSelection = "0" # Must be 0, else you may accidentally call an if statement. Used in a while loop to determine user actions and sometimes as an exit condition. There's probably a way to define this later and save a few lines, but make that a TODO since basic functionality comes first.
+todayDate = str(date.today()) # Used to append the date onto the end of files, and hide the date when casually viewing them.
 
-core.dirChanger(notesDir) # Makes sure we aren't dumping notes all over the poor user's computer by moving into the designated PluralNotes directory (notesDir).
+def clear(): os.system('cls' if os.name == 'nt' else 'clear')
+
+def dirChanger(dirName):
+	if os.path.isdir(dirName) == False: os.mkdir(dirName)
+	os.chdir(dirName)
+	workingDir = os.path.dirname
+
+# Login sequence; tries to account for upper/lowercase and exits if the user requests it, else loops prompt until a valid login is entered. Allows users to create nonexistent username directories as long as they don't violate these restrictions, or log into an existing one.
+# TODO: Check if a username including a backslash is a problem at all.
+# TODO: Figure out password authentication and directory encryption so inter-username privacy is possible. This is meant to be a multiuser notekeeping utility on one shared computer account, so passwords are kind of important for that. Also MAKE SURE that the passwords are stored encrypted, and encrypt the entered password with the same hash to compare. People reuse passwords a lot and it's a security hazard to store them in plaintext. Make sure the password is not displayed as it's typed, too.
+def login():
+	global username
+	while 1:
+		username = input(" Enter your name (case-sensitive), or q to exit: ")
+		# If user does not yet exist:
+		# Deal with whitespaces and empty strings
+		if os.path.isdir(notesDir + "/" + username) == False:
+			if username.isspace() == True or " " in username or "\n" in username or "\t" in username:
+				clear()
+				print(" Usernames cannot contain spaces, tabs, or new lines. Please enter a valid username.")
+			elif username == False or username == "":
+				clear()
+				print(" Please enter a valid username.")
+
+			# Disallow reserved shared directory name to avoid naming conflict
+			elif username == "sharednotes" or username == "archives":
+				clear()
+				print(" Name reserved for shared notes or archives. Please enter a valid username.")
+
+			# Give the user a way to exit the program from this prompt so they're not stuck looping endlessly until they make a user
+			elif username.lower() == "q":
+				clear()
+				print("See you next time!")
+				sys.exit(0)
+
+			# Ask if the person wants to create user if it doesn't already exist, and create them if yes
+			else:
+				print(" This user does not exist. Would you like to create a user called " + username + "?")
+				userCheck = input(" Input <y/n>: ").lower()
+				if userCheck == "y" or userCheck == "yes":
+					# os.mkdir(username)
+					dirChanger(username)
+					if os.path.isdir("data") == False: os.mkdir("data")
+					os.chdir(notesDir)
+					print (" " + username + " created. You may now log in!")
+
+		# Log in valid existing users and proceed to the actual program
+		# TODO: Add password authentication and decryption of logged-in user.
+		elif os.path.isdir(notesDir + "/" + username) == True:
+			userDir = notesDir + "/" + username
+			if os.path.isfile(userDir + "/data/settings.txt") == False:
+				if os.name == "nt":
+					defaultEditor = os.environ.get('EDITOR') if os.environ.get('EDITOR') else 'notepad'
+				else:
+					defaultEditor = os.environ.get('EDITOR') if os.environ.get('EDITOR') else 'nano'
+				f = open(notesDir + "/" + username + "/data/settings.txt", "a")
+				f.write(defaultEditor + "\n")
+				f.write("10" + "\n")
+				f.write("True" + "\n")
+				f.write("False" + "\n")
+				f.write("-" + "\n")
+				f.write("Warning: Do not edit spacing!" + "\n")
+				f.write("If manually editing settings, True/False must be capitalized. If you mess it up, don't worry- you can either delete this file (the program will remake it) or reset to the default in settings.")
+				f.write("""Settings in order:
+				Editor
+				Page size
+				Include date in new note names
+				Include username in new note names""")
+			break
+
+		# Deal with edge cases and weird inputs, because you just know that someone is going to break this in an unexpected way.
+		else: print(" Please enter a valid username.")
+
+
+def paginateDir(dirName):
+	feedback = ""
+	settingsFile = os.environ['HOME'] + '/.pluralnotes' + "/" + username + "/data/settings.txt"
+	settings = open(settingsFile, 'r').readlines()
+	editor = str(settings[0]).strip()
+	fileCount = int(str(settings[1]).strip())
+	navigator = 0
+	# Create a list of working directory contents. Sort the list alphabetically.
+	dirContents = os.listdir()
+	dirContents = sorted(dirContents, key=str.lower)
+	dirContentsLength = len(dirContents)
+	selection = 0 # Used by user for input, and to break loop on request
+	bottomPageNumber = 0 # Lower limit of a page
+	pageCount = 1 # Which page we're on. Needs to be separate from bottomPageNumber because that variable increments by the number in fileCount, and page number increments by one.
+	topPageNumber = bottomPageNumber + fileCount # Upper limit of a page.
+	if len(dirContents) == 0:
+		while navigator != "q":
+			print()
+			print(" No notes here!")
+			print()
+			print("\x1b[31m" + " q: quit" + "\x1b[0m")
+			if feedback != "":
+				print()
+			print("\x1b[33m" + " " + feedback + "\x1b[0m")
+			navigator = input(" Enter selection: ").lower()
+			if navigator == "q":
+				clear()
+				break
+			else:
+				clear()
+				feedback = "Invalid input."
+	else:
+		holderList = []
+		# Remove folders from directory list- there's bound to be a better way to do it but this works for now.
+		for elem in dirContents:
+			isFile = os.path.isfile(elem)
+			if isFile == True:
+				holderList.append(str(elem))
+		dirContents = holderList
+		dirContents = sorted(dirContents, key=str.lower)
+		search = False
+		outOfNotes = False
+		while selection != "q":
+			print()
+			print(" Page " + str(pageCount))
+			print()
+			# Paginate directory. Sort of an odd way to do it, but it works and I couldn't get another method working. Still learning Python! Definitely an area to refactor later.
+			for elem in dirContents[bottomPageNumber:topPageNumber]:
+				print(str(" " + str(dirContents.index(elem))) + ". " + str(elem)) # Yes, the outermost string is needed. It throws a type error otherwise.
+			print()
+			print("\x1b[31m" + " n: next page" + "\x1b[0m")
+			print("\x1b[33m" + " b: previous page" + "\x1b[0m")
+			print("\x1b[32m" + " s: search for notes" + "\x1b[0m")
+			if search == True:
+				print("\x1b[36m" + " c: clear search" + "\x1b[0m")
+			print("\x1b[34m" + " e: read/edit note" + "\x1b[0m")
+			print("\x1b[35m" + " d: delete note" + "\x1b[0m")
+			print("\x1b[31m" + " q: quit" + "\x1b[0m")
+			if feedback != "":
+				print()
+			print("\x1b[33m" + " " + feedback + "\x1b[0m")
+			# User input time!
+			navigator = input(" Enter selection: ").lower()
+			# Address running out of notes so the user can't iterate through empty pages
+			if navigator == "n" and dirContentsLength < topPageNumber + pageCount:
+				clear()
+				feedback = "No more notes."
+			elif navigator == "b" and pageCount == 1:
+				clear()
+				# Fixes weird change in size of list that happens otherwise by resetting to page "one" (0)
+				bottomPageNumber = 0
+				topPageNumber = bottomPageNumber + fileCount
+				pageCount = 1
+				feedback = "You're already on the first page!"
+			# Regular navigation
+			elif navigator == "n":
+				clear()
+				# Iterate to next page.
+				bottomPageNumber = bottomPageNumber + fileCount
+				topPageNumber = bottomPageNumber + fileCount
+				pageCount = pageCount + 1
+				feedback = ""
+			elif navigator == "b" and pageCount != 1:
+				clear()
+				# Iterate to previous page.
+				bottomPageNumber = bottomPageNumber - fileCount
+				topPageNumber = bottomPageNumber + fileCount
+				pageCount = pageCount - 1
+				feedback = ""
+			# Address trying to change pages when there are no notes
+			elif navigator == "n" and len(dirContents[bottomPageNumber:topPageNumber]) == 0:
+				clear()
+				feedback = ""
+			elif navigator == "b" and len(dirContents[bottomPageNumber:topPageNumber]) == 0:
+				clear()
+				feedback = ""
+			# Search function
+			elif navigator == "s":
+				# Ask for regex pattern, compile it, then iterate through the directory checking to see if notes match. If the notes do match, they're added to a list. At the end of the iterations, set dirContents (the variable used to print contents) equal to the results stored in this list and sort as usual. If there are no matches, re-sort the directory to show all notes again and notify the user. Also set search = True to show the "clear search" option.
+				search = True
+				regMatchList = []
+				searchTerm = str(input(" Enter search term (regex): "))
+				clear()
+				pattern = re.compile(searchTerm)
+				for elem in dirContents:
+					match = re.search(pattern, elem)
+					if match:
+						regMatchList.append(elem)
+				dirContents = sorted(regMatchList, key=str.lower)
+				if dirContents == []:
+					clear()
+					feedback = "No notes matching term found."
+					search = False
+					dirContents = os.listdir()
+					holderList = []
+					for elem in dirContents:
+						isFile = os.path.isfile(elem)
+						if isFile == True:
+							holderList.append(str(elem))
+					dirContents = holderList
+					dirContents = sorted(dirContents, key=str.lower)
+			# Clear search, redo list
+			elif navigator == "c":
+				clear()
+				feedback = "Search cleared."
+				search = False
+				dirContents = os.listdir()
+				holderList = []
+				for elem in dirContents:
+					isFile = os.path.isfile(elem)
+					if isFile == True:
+						holderList.append(str(elem))
+				dirContents = holderList
+				dirContents = sorted(dirContents, key=str.lower)
+			# Note editing
+			elif navigator =="e":
+				userInput = int(input(" Enter the number of the note to edit: "))
+				if 0 <= userInput < len(dirContents):
+					editFile = dirContents[userInput]
+					os.system(editor + " " + editFile)
+					feedback = "Changes saved."
+					clear()
+				else:
+					clear()
+					feedback = "Note does not exist."
+			elif navigator == "d":
+				outOfNotes = False
+				userInput = int(input(" Enter the number of the note to delete: "))
+				if 0 <= userInput < len(dirContents):
+					deleteFile = dirContents[userInput]
+					confirmation = input("\x1b[33m" + " Are you sure you want to delete " + deleteFile + "? <y/N>" + "\x1b[0m").lower()
+					if confirmation == "y":
+						clear()
+						os.remove(deleteFile)
+						# Yes, these lines pop up several times. It's not a function because it breaks if I do that; it can be identical and have access to all variables and it still breaks. No clue why. I'm sure it'll click someday, or someone who knows more about Python will come up with a way to do it.
+						dirContents = os.listdir()
+						holderList = []
+						for elem in dirContents:
+							isFile = os.path.isfile(elem)
+							if isFile == True:
+								holderList.append(str(elem))
+						dirContents = holderList
+						dirContents = sorted(dirContents, key=str.lower)
+						bottomPageNumber = 0
+						topPageNumber = bottomPageNumber + fileCount
+						pageCount = 1
+						feedback = "Note deleted."
+					else:
+						clear()
+						feedback = "Deletion canceled."
+				else:
+					clear()
+					feedback = "Note does not exist."
+			elif navigator == "q":
+				clear()
+				break
+			# Any other cases that the user might manage to come up with.
+			else:
+				clear()
+				feedback = "Invalid entry."
+
+# Note menus and handling.
+def noteHandler(workingDir):
+	feedback = ""
+	sharedSelection = "0"
+	# Set settings
+	settingsFile = os.environ['HOME'] + '/.pluralnotes' + "/" + username + "/data/settings.txt"
+	settings = open(settingsFile, 'r').readlines()
+	editor = settings[0].strip()
+	fileCount = settings[1].strip()
+	showDate = settings[2].strip()
+	showUsername = settings[3].strip()
+	clear()
+	dirChanger(workingDir)
+	while sharedSelection != "q":
+		print()
+		print(" You are here: " + workingDir)
+		print(""" What would you like to do?
+""")
+		print("\x1b[31m" + " 1: Add a new note" + "\x1b[0m")
+		print("\x1b[33m" + " 2: View, edit, or delete existing notes" + "\x1b[0m")
+		print("\x1b[32m" + " q: Return to main menu" + "\x1b[0m")
+		if feedback != "":
+			print()
+		print("\x1b[33m" + " " + feedback + "\x1b[0m")
+		sharedSelection = input(" Enter selection: ").lower()
+
+		if sharedSelection == "1" or sharedSelection == "a":
+			feedback = ""
+			newFile = input(" Enter note name: ")
+			if newFile.isspace() == True or " " in newFile or "\n" in newFile or "\t" in newFile:
+				clear()
+				feedback = "Note names cannot contain spaces, tabs, or new lines. Please enter a valid note name."
+			elif newFile == False or newFile == "":
+				clear()
+				feedback = "Please enter a note name."
+			else:
+				sharedDir = os.environ['HOME'] + '/.pluralnotes' + '/sharednotes'
+				# Use settings to add date and/or username onto file
+				if showDate.strip() == "True" or workingDir == sharedDir:
+					newdatefile = newFile + "-" + str(todayDate)
+					newFile = newdatefile
+					sleep(0.05) # Filename improperly created if sleep is not added
+				if showUsername.strip() == "True" or workingDir == sharedDir:
+					newFile = newFile  + "-" + username
+					sleep(0.05) # Filename improperly created if sleep is not added
+				newFile = newFile + ".txt"
+				clear()
+				sleep(0.05) # Filename improperly created if sleep is not added
+				os.system(editor + " " + newFile)
+				# newFile = newFile  + "-" + username + "-" + todayDate + ".txt"
+				# Sign note if requested by appending it onto the end of the file contents.
+				print()
+				signNameCheck = input(" Would you like to sign your note? <Y/n>").lower()
+				if signNameCheck == "y" or signNameCheck == "yes":
+					signName = open(newFile, "a")
+					signName.write("\n -" + username) # New line helps keep the signature distinct
+					signName.close
+					clear()
+					feedback = "Note signed!"
+				else:
+					clear()
+					feedback = "Note saved!"
+		elif sharedSelection == "2" or sharedSelection == "v" or sharedSelection == "e":
+			feedback = ""
+			# View or edit a note; paginated search
+			clear()
+			paginateDir(os.path.dirname)
+		elif sharedSelection.lower() == "q" or sharedSelection.lower() == "quit" or sharedSelection.lower() == "b":
+			# Back to main menu.
+			feedback = ""
+			clear()
+			break
+		else:
+			clear()
+			feedback = "Invalid entry. Please enter 1-5."
+
+def replaceLine(fileName, lineNum, text):
+    lines = open(fileName, 'r').readlines()
+    lines[lineNum] = text
+    out = open(fileName, 'w')
+    out.writelines(lines)
+    out.close()
+
+
+dirChanger(notesDir) # Makes sure we aren't dumping notes all over the poor user's computer by moving into the designated PluralNotes directory (notesDir).
 # Create other necessary directories within the main directory- one for archived notes of deleted users, and the other for notes that everyone can access.
 if os.path.isdir(archiveDir) == False: os.mkdir(archiveDir)
 if os.path.isdir(sharedDir) == False: os.mkdir(sharedDir)
 
-core.clear()
+clear()
 print()
 print("\x1b[32m" + " Welcome to Pluralnotes!" + "\x1b[0m")
 print()
 
 # Login sequence; tries to account for upper/lowercase and exits if the user requests it, else loops prompt until a valid login is entered. Allows users to create nonexistent username directories as long as they don't violate these restrictions, or log into an existing one.
-login.login()
-username = login.username
+login()
 userDir = notesDir + "/" + username
 # TODO: Check if a username including a backslash is a problem at all.
 # TODO: Figure out password authentication and directory encryption so inter-user privacy is possible. This is meant to be a multiuser notekeeping utility on one shared computer account, so passwords are kind of important for that. Also MAKE SURE that the passwords are stored encrypted, and encrypt the entered password with the same hash to compare. People reuse passwords a lot and it's a security hazard to store them in plaintext. Make sure the password is not displayed as it's typed, too.
 
 # Set settings from user file now that they're logged in.
-settingsFile = os.environ['HOME'] + '/.pluralnotes' + "/" + login.username + "/data/settings.txt"
+settingsFile = os.environ['HOME'] + '/.pluralnotes' + "/" + username + "/data/settings.txt"
 settings = open(settingsFile, 'r').readlines()
 editor = settings[0]
 fileCount = int(settings[1])
 showDate = settings[2]
 showUsername = settings[3]
 
-core.clear() # Note: Clear is specified before the loop so that extra responses can be added before the prompt each time. Otherwise, clear just wipes them out. It takes more lines, but otherwise new responses don't show up before the loop like they should.
+clear() # Note: Clear is specified before the loop so that extra responses can be added before the prompt each time. Otherwise, clear just wipes them out. It takes more lines, but otherwise new responses don't show up before the loop like they should.
 
 feedback = "" # Used to complain at users.
 print()
@@ -68,24 +406,24 @@ while 1:
 
 	# Option 1: Enters personal directory and presents new options on what to do.
 	if selection == "1":
-		core.noteHandler(userDir)
+		noteHandler(userDir)
 
 # Enters shared directory and presents options.
 	elif selection == "2":
-		core.noteHandler(sharedDir)
+		noteHandler(sharedDir)
 
 	elif selection == "3":
-		core.clear()
-		core.dirChanger(archiveDir)
-		core.paginateDir(archiveDir)
+		clear()
+		dirChanger(archiveDir)
+		paginateDir(archiveDir)
 
 # Clear screen and present user management options.
 	elif selection == "4":
-		#core.clear()
-		core.dirChanger(notesDir)
+		#clear()
+		dirChanger(notesDir)
 		sharedSelection = "0"
 		while sharedSelection != "q":
-			core.clear()
+			clear()
 			print("""
  User Management
  What would you like to do?
@@ -106,20 +444,20 @@ while 1:
 				newUsername = input(" Enter name of new user: ")
 				if os.path.isdir(notesDir + "/" + newUsername) == False:
 					if newUsername.isspace() == True or " " in newUsername or "\n" in newUsername or "\t" in newUsername:
-						core.clear()
+						clear()
 						feedback = "Usernames cannot contain spaces, tabs, or new lines. Please enter a valid username."
 					elif newUsername == False or newUsername == "":
-						core.clear()
+						clear()
 						feedback = "Please enter a valid username."
 					# Disallow reserved shared directory name to avoid naming conflict
 					elif newUsername == "sharednotes" or newUsername == "archives":
-						core.clear()
+						clear()
 						feedback = "Name reserved for shared notes or archives. Please enter a valid username."
 					else:
-						core.dirChanger(newUsername)
+						dirChanger(newUsername)
 						if os.path.isdir("data") == False: os.mkdir("data")
 						os.chdir(notesDir)
-						core.clear()
+						clear()
 						feedback = newUsername + " created."
 				elif notesDir + "/" + newUsername == notesDir + "/":
 					feedback = "Please enter a valid username."
@@ -135,20 +473,20 @@ while 1:
 				else:
 					newName = input(" Enter " + renameDir + "'s new name: ")
 					if newName.isspace() == True or " " in newName or "\n" in newName or "\t" in newName:
-						core.clear()
+						clear()
 						feedback = "Usernames cannot contain spaces, tabs, or new lines. Please enter a valid username."
 					elif newName == False or newName == "":
-						core.clear()
+						clear()
 						feedback = "Please enter a valid username."
 						# Disallow reserved shared directory name to avoid naming conflict
 					elif newName == "sharednotes" or newName == "archives":
-						core.clear()
+						clear()
 						feedback = "Name reserved for shared notes or archives. Please enter a valid username."
 					elif renameDir == newName:
-						core.clear()
+						clear()
 						feedback = renameDir + " already has this name!"
 					elif os.path.isdir(newName) == True:
-						core.clear()
+						clear()
 						feedback = "This name is already taken!"
 					else:
 						confirmationCheck = input(" Are you sure you want to rename " + renameDir + " to " + newName + "? <Y/N>").lower()
@@ -157,14 +495,14 @@ while 1:
 							if renameDir == username:
 								username = newName
 								userDir = notesDir + "/" + username
-							core.clear()
+							clear()
 							feedback = "Renaming successful; " + renameDir + " is now named " + newName + "."
 						else:
-							core.clear()
+							clear()
 							feedback = "Cancelled renaming."
 			elif sharedSelection == "3":
 				feedback = ""
-				core.clear()
+				clear()
 				# View list of all users; do not allow opening directories, just viewing names and narrowing them down. Hide the shareduser and archive directory if possible. If possible, also display count of how many notes each user has in their directory. TODO: Find a way to merge this and the paginate function; the main difference is that the paginate function shows files and this needs to show directories.
 				dirContents = os.listdir()
 				dirContents = sorted(dirContents, key=str.lower)
@@ -188,10 +526,10 @@ while 1:
 						navigator = input(" Enter selection: ").lower()
 						if navigator == "q":
 							feedback = ""
-							core.clear()
+							clear()
 							break
 						else:
-							core.clear()
+							clear()
 							feedback = "Invalid entry."
 					else:
 						# Paginate users. Separate from regular pagination because users are directories, not files.
@@ -214,10 +552,10 @@ while 1:
 
 						# Address running out of notes so the user can't iterate through empty pages
 						if selection == "n" and dirContentsLength < topPageNumber + pageCount:
-							core.clear()
+							clear()
 							feedback = "No more users."
 						elif selection == "b" and pageCount == 1:
-							core.clear()
+							clear()
 							# Fixes weird change in size of list that happens otherwise by resetting to page "one" (0)
 							bottomPageNumber = 0
 							topPageNumber = bottomPageNumber + fileCount
@@ -226,14 +564,14 @@ while 1:
 							# Regular navigation
 						elif selection == "n":
 							feedback = ""
-							core.clear()
+							clear()
 							# Iterate to next page.
 							bottomPageNumber = bottomPageNumber + fileCount
 							topPageNumber = bottomPageNumber + fileCount
 							pageCount = pageCount + 1
 						elif selection == "b" and pageCount != 1:
 							feedback = ""
-							core.clear()
+							clear()
 							# Iterate to previous page.
 							bottomPageNumber = bottomPageNumber - fileCount
 							topPageNumber = bottomPageNumber + fileCount
@@ -241,17 +579,17 @@ while 1:
 						# Address trying to change pages when there are no notes
 						elif selection == "n" and len(dirContents[bottomPageNumber:topPageNumber]) == 0:
 							feedback = ""
-							core.clear()
+							clear()
 						elif selection == "b" and len(dirContents[bottomPageNumber:topPageNumber]) == 0:
 							feedback = ""
-							core.clear()
+							clear()
 						# Search function
 						elif selection == "s":
 							search = True
 							feedback = ""
 							regMatchList = []
 							searchTerm = str(input(" Enter search term (regex): "))
-							core.clear()
+							clear()
 							pattern = re.compile(searchTerm)
 							for elem in dirContents:
 								match = re.search(pattern, elem)
@@ -260,12 +598,12 @@ while 1:
 							dirContents = sorted(regMatchList, key=str.lower)
 							if dirContents == []:
 								search = False
-								core.clear()
+								clear()
 								feedback = "No notes matching term found."
 								dirContents = os.listdir()
 								dirContents = sorted(dirContents, key=str.lower)
 						elif selection == "c":
-							core.clear()
+							clear()
 							feedback = "Search cleared."
 							search = False
 							dirContents = os.listdir()
@@ -278,15 +616,15 @@ while 1:
 							dirContents = sorted(dirContents, key=str.lower)
 						elif selection == "q":
 							feedback = ""
-							core.clear()
+							clear()
 							break
 						# Any other cases that the user might manage to come up with.
 						else:
-							core.clear()
+							clear()
 							feedback = "Invalid entry."
 
 			elif sharedSelection == "4":
-				# core.clear()
+				# clear()
 				# Delete a user. Gets confirmation twice to ensure the user doesn't delete someone they want to keep around, and moves their notes into the archive directory. Also accounts for trying to delete the current active user and disallows that. Requires exact case match to ensure mindful deletion.
 				# TODO: if deleted user has a password, require that to be entered instead of their username in order to delete them. Should help prevent malicious deletion.
 				# TODO: allow deletion of active user, return to login prompt if deleted.
@@ -294,7 +632,7 @@ while 1:
 				deleteUsername = input(" Enter user to delete, or q to cancel: ")
 				deleteFolder = notesDir + "/" + deleteUsername
 				if os.path.isdir(deleteFolder) == False:
-					core.clear()
+					clear()
 					print()
 					feedback = "Cannot delete nonexistent users."
 				else:
@@ -324,25 +662,25 @@ while 1:
 									os.rename(originalName, archiveFilename)
 									shutil.move(archiveFilename, archiveDir)
 							shutil.rmtree(deleteFolder)
-							core.clear()
+							clear()
 						print()
 						feedback = deleteUsername + " successfully deleted. Their notes can now be found in the archives."
 					else:
-						core.clear()
+						clear()
 						feedback = "Cannot delete " + deleteUsername + ". Did you spell their name correctly?"
 
 			elif sharedSelection == "5" or sharedSelection.lower() == "q" or sharedSelection.lower() == "quit":
 				feedback = ""
-				core.clear()
+				clear()
 				break
 			else:
-				core.clear()
+				clear()
 				feedback = "Invalid entry. Please enter 1-5."
 
 	elif selection == "5":
 		feedback = ""
 		action = 0
-		core.clear()
+		clear()
 		while action != "q":
 			settingsFile = userDir + "/data/settings.txt"
 			if os.path.isfile(settingsFile) == False:
@@ -374,58 +712,58 @@ while 1:
 			print("\x1b[33m" + " " + feedback + "\x1b[0m")
 			action = input(" Enter selection: ").lower()
 			if action == "q" or action == "quit":
-				core.clear()
+				clear()
 				selection = 0
 				feedback = ""
 				break
 			if action == "1":
 				newEditor = str(input("Enter the command for your preferred editor: ")).lower()
-				core.editor = newEditor
+				editor = newEditor
 				newEditor = newEditor + " \n"
-				core.replaceLine(settingsFile, 0, newEditor)
+				replaceLine(settingsFile, 0, newEditor)
 				feedback = ""
-				core.clear()
+				clear()
 			if action == "2":
 				newPageSize = str(input("Enter how many entries you'd like per page: ")).lower()
 				numberCheck = str.isdigit(newPageSize)
 				if numberCheck == True:
 					fileCount = newPageSize
 					newPageSize = newPageSize + "\n"
-					core.replaceLine(settingsFile, 1, newPageSize)
+					replaceLine(settingsFile, 1, newPageSize)
 					feedback = ""
-					core.clear()
+					clear()
 				else:
-					core.clear()
+					clear()
 					feedback = "Must enter a number from 0-99."
 			if action == "3":
 				feedback = ""
-				core.clear()
+				clear()
 				if showDate == "True\n" or showDate == "True":
 					newShowDate = "False" + "\n" # Using showDate would mess things up because of the new line. Not the best, I know, but it works.
 				else:
 					newShowDate = "True" + "\n"
-				core.replaceLine(settingsFile, 2, newShowDate)
+				replaceLine(settingsFile, 2, newShowDate)
 				showDate = newShowDate
 			if action == "4":
 				if showUsername == "True\n" or showUsername == "True":
 					newShowUsername = "False" + "\n" # Using showDate would mess things up because of the new line. Not the best, I know, but it works.
 				else:
 					newShowUsername = "True" + "\n"
-				core.replaceLine(settingsFile, 3, newShowUsername)
+				replaceLine(settingsFile, 3, newShowUsername)
 				showUsername = newShowUsername
 				feedback = ""
-				core.clear()
+				clear()
 			if action == "r":
 				# Recreates original settings.
-				core.replaceLine(settingsFile, 0, "vim\n")
-				core.replaceLine(settingsFile, 1, "10\n")
-				core.replaceLine(settingsFile, 2, "True\n")
-				core.replaceLine(settingsFile, 3, "True\n")
+				replaceLine(settingsFile, 0, "vim\n")
+				replaceLine(settingsFile, 1, "10\n")
+				replaceLine(settingsFile, 2, "True\n")
+				replaceLine(settingsFile, 3, "True\n")
 				feedback = ""
-				core.clear()
+				clear()
 
 	elif selection == "6":
-		core.clear()
+		clear()
 		# Copy detection- if pluralnotes.zip already exists, check if pluralnotes1.zip exists, then pluralnotes2.zip, and so on until a free name is found. Then make that file and chuck it in the home directory for the user.
 		copyNumber = 1
 		if os.path.exists(os.environ['HOME'] + "/pluralnotes.zip") == True or os.path.exists(os.environ['HOME'] + "\pluralnotes.zip") == True:
@@ -443,10 +781,10 @@ while 1:
 	elif selection == "7" or selection.lower() == "q" or selection.lower() == "quit":
 		quitNotes = True
 		# Clear the terminal to keep things looking clean.
-		core.clear()
+		clear()
 		print("See you next time, " + username + "!")
 		sys.exit(0)
 # Dealing with edge cases where nonexistent options are entered.
 	else:
-		core.clear()
+		clear()
 		feedback = "Invalid entry. Please select 1-6."
